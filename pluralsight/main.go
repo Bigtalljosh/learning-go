@@ -1,48 +1,78 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/csv"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"time"
 )
 
-func main() {
+func main() {	
 
-	http.Handle("/files/", http.StripPrefix("/files/", http.FileServer(http.Dir("."))))
+	http.HandleFunc("/customers/add", func(w http.ResponseWriter, r *http.Request){
+	
+		var c Customer
+		dec := json.NewDecoder(r.Body)
 
-	http.HandleFunc("/servecontent", func(w http.ResponseWriter, r *http.Request) {
-		customerFile, err := os.Open("./customers.csv")
+		err := dec.Decode(&c)
+
 		if err != nil {
-			log.Fatal(err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
 		}
-		defer customerFile.Close()
 
-		http.ServeContent(w, r, "customers.csv", time.Now(), customerFile)
+		log.Print(c)
 	})
 
-	http.HandleFunc("/servefile", func(w http.ResponseWriter, r *http.Request) {
-		http.ServeFile(w, r, "customers.csv")
-	})
+	go func (){
+		time.Sleep(2 * time.Second)
 
-	http.HandleFunc("/fprint", func(w http.ResponseWriter, r *http.Request) {
-		customerFile, err := os.Open("./customers.csv")
+		_, err := http.Post(
+			"http://localhost:3000/customers/add",
+			"application/json",
+		bytes.NewBuffer([]byte(`
+			{
+				"id": 999,
+				"firstName": "Josh",
+				"lastName": "D",
+				"address": "123 simple street, London, England"
+			}			
+		`)))
+
+		if err != nil {
+			log.Fatal(err)
+			return
+		}
+	}()
+
+	http.HandleFunc("/customers", func(w http.ResponseWriter, r *http.Request) {
+		f, err := os.Open("customers.csv")
 		if err != nil {
 			log.Fatal(err)
 		}
-		defer customerFile.Close()
-
-		data, err := io.ReadAll(customerFile)
+		defer f.Close()
+		customers, err := readCustomers(f)
 		if err != nil {
-			log.Fatal(err)
+			log.Print(err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
 		}
 
-		fmt.Fprint(w, string(data))
-
-		// io.Copy(w, customerFile)
+		data, err := json.Marshal(customers)
+		if err != nil {
+			log.Print(err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.Header().Add("content-type", "application/json")
+		w.Write(data)
 
 	})
 
@@ -60,7 +90,6 @@ func main() {
 	fmt.Println("Server stopped")
 }
 
-
 type myHandler string
 
 func (mh myHandler) ServeHTTP (w http.ResponseWriter, r *http.Request){
@@ -77,4 +106,57 @@ func (mh myHandler) ServeHTTP (w http.ResponseWriter, r *http.Request){
 	fmt.Fprintln(w, "")
 	fmt.Fprintln(w, string(mh))
 	fmt.Fprintln(w, r.Header)
+}
+
+type Customer struct {
+	ID         int      `json="id"`
+	FirstName  string	`json="firstName`
+	LastName   string	`json="lastName`
+	Address    string	`json="address`
+}
+
+func readCustomers(r io.Reader) ([]Customer, error) {
+
+	f, err := os.Open("customers.csv")
+
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	defer f.Close()
+
+	customers := make([]Customer, 0)
+	csvReader := csv.NewReader(r)
+
+	csvReader.Read() // throw away header
+
+	for {
+		fields, err := csvReader.Read()
+		if err == io.EOF {
+			return customers, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		var c Customer
+		id, err := strconv.Atoi(fields[0])
+		if err != nil {
+			continue
+		}
+		c.ID = id
+		c.FirstName = fields[1]
+		c.LastName = fields[2]
+		c.Address = fields[3]
+		customers = append(customers, c)
+	}
+}
+
+func convertFromJSON(data []byte) (Customer, error) {
+	
+	b := bytes.NewBuffer(data)
+	dec := json.NewDecoder(b)
+
+	var c Customer
+	err := dec.Decode(&c)
+	return c, err
 }
